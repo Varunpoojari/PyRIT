@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import asyncio
 import logging
 from enum import Enum
 from typing import Any, Literal, cast
@@ -172,7 +173,8 @@ class _CyberSecEvalMitreDataset(_RemoteDatasetLoader):
 
         Raises:
             ValueError: If a row is missing an expected key, if its technique
-                mapping is not a dict, or if no prompts remain after filtering.
+                mapping is not a dict, if its ``mutated_prompt`` is not a string,
+                or if no prompts remain after filtering.
         """
         selected = {category.value for category in self.categories} if self.categories is not None else None
         logger.info(
@@ -182,16 +184,23 @@ class _CyberSecEvalMitreDataset(_RemoteDatasetLoader):
 
         # The JSON reader returns the parsed file as-is. The declared return type
         # of ``_fetch_from_url`` says the values are strings, but
-        # ``ttp_id_name_mapping`` is a nested dict.
+        # ``ttp_id_name_mapping`` is a nested dict. The helper does a synchronous
+        # download and file I/O, so it runs in a worker thread to keep the event
+        # loop free for other work.
         examples = cast(
             "list[dict[str, Any]]",
-            self._fetch_from_url(source=self.source, source_type=self.source_type, cache=cache),
+            await asyncio.to_thread(
+                self._fetch_from_url,
+                source=self.source,
+                source_type=self.source_type,
+                cache=cache,
+            ),
         )
 
         harm_categories = self._standardize_harm_categories([HarmCategory.MALWARE])
 
         seed_prompts: list[SeedUnion] = []
-        for example in examples:
+        for row_index, example in enumerate(examples):
             missing_keys = _REQUIRED_KEYS - example.keys()
             if missing_keys:
                 raise ValueError(
@@ -210,7 +219,13 @@ class _CyberSecEvalMitreDataset(_RemoteDatasetLoader):
             if selected is not None and mitre_category not in selected:
                 continue
 
-            prompt = str(example["mutated_prompt"] or "")
+            raw_prompt = example["mutated_prompt"]
+            if raw_prompt is not None and not isinstance(raw_prompt, str):
+                raise ValueError(
+                    f"CyberSecEval MITRE row {row_index} has a `mutated_prompt` that is not a string "
+                    f"(got {type(raw_prompt).__name__}). The upstream schema may have changed."
+                )
+            prompt = raw_prompt or ""
             if not prompt.strip():
                 logger.warning("[CyberSecEval MITRE] Skipping row with an empty mutated_prompt field")
                 continue
