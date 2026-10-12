@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import patch
 
@@ -202,6 +204,41 @@ async def test_fetch_dataset_non_dict_ttp_mapping_raises(mock_mitre_data: list[d
     with patch.object(loader, "_fetch_from_url", return_value=mock_mitre_data):
         with pytest.raises(ValueError, match="not a dict"):
             await loader.fetch_dataset_async()
+
+
+@pytest.mark.parametrize(
+    "bad_prompt",
+    [{"prompt": "Print hello"}, ["Print hello"], 42],
+    ids=["object", "array", "number"],
+)
+async def test_non_string_mutated_prompt_raises(mock_mitre_data: list[dict[str, Any]], bad_prompt: Any) -> None:
+    loader = _CyberSecEvalMitreDataset()
+    mock_mitre_data[1]["mutated_prompt"] = bad_prompt
+
+    with patch.object(loader, "_fetch_from_url", return_value=mock_mitre_data):
+        with pytest.raises(ValueError, match=r"row 1 has a `mutated_prompt` that is not a string"):
+            await loader.fetch_dataset_async()
+
+
+async def test_fetch_does_not_block_event_loop(mock_mitre_data: list[dict[str, Any]]) -> None:
+    loader = _CyberSecEvalMitreDataset()
+
+    def slow_fetch(**kwargs: Any) -> list[dict[str, Any]]:
+        time.sleep(0.3)
+        return mock_mitre_data
+
+    heartbeat_delays: list[float] = []
+    start = time.monotonic()
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0.01)
+        heartbeat_delays.append(time.monotonic() - start)
+
+    with patch.object(loader, "_fetch_from_url", side_effect=slow_fetch):
+        dataset, _ = await asyncio.gather(loader.fetch_dataset_async(), heartbeat())
+
+    assert len(dataset.seeds) == 4
+    assert heartbeat_delays[0] < 0.2
 
 
 async def test_empty_mutated_prompt_is_skipped_with_warning(
