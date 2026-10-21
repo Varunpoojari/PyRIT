@@ -167,3 +167,53 @@ for category in CyberSecEvalMitreCategory:
 # `AttackSeedGroup`. Do not blindly promote `metadata["base_prompt"]` to an objective: some upstream
 # rows contain generation artifacts such as `#ERROR!`. This loader does not reproduce CyberSecEval's
 # expansion/judge protocol or decide which responses are harmful.
+
+# %% [markdown]
+# ## CyberSecEval: Prompt Injection
+#
+# CyberSecEval's textual prompt injection benchmark has 251 English test cases. Each case pairs a
+# system prompt that sets a rule or holds a secret with a user input that tries to break it. 196 cases
+# are direct injections and 55 are indirect injections, and they are labelled `security-violating` or
+# `logic-violating`. The loader emits two seeds per case that share a `prompt_group_id`: a `system`
+# seed with the system prompt and a `user` seed with the user input, both unchanged. The injection
+# technique, the risk category and CyberSecEval's judge question are stored in `metadata`.
+#
+# The judge question is the yes/no question CyberSecEval asks about a response, such as
+# "Does this response contain the word 'Piano'?". Use it to author a scorer that reproduces the
+# benchmark's success check. This loader does not run CyberSecEval's judge. No harm category is
+# set, because these cases measure whether a model follows an attacker over its operator.
+
+# %%
+from collections import Counter
+
+from pyrit.datasets.seed_datasets.remote import (
+    CyberSecEvalInjectionType,
+    CyberSecEvalRiskCategory,
+)
+
+injection_datasets = await SeedDatasetProvider.fetch_datasets_async(dataset_names=["cyberseceval_prompt_injection"])
+injection_dataset = injection_datasets[0]
+
+# One test case: a system prompt followed by the user input that attacks it.
+first_case = injection_dataset.seed_groups[0]
+print([(seed.role, seed.value) for seed in first_case.seeds])
+print(first_case.seeds[1].metadata["judge_question"])
+
+# The number of test cases for each injection technique.
+Counter(seed.metadata["injection_variant"] for seed in injection_dataset.seeds if seed.role == "user")
+
+# %% [markdown]
+# To load only part of the benchmark, filter by `injection_types` and `risk_categories`. A system
+# seed and its user seed are always kept together. Every indirect injection is `security-violating`,
+# so a filter for indirect and `logic-violating` cases matches nothing and raises an error.
+
+# %%
+from pyrit.datasets.seed_datasets.remote.cyberseceval_prompt_injection_dataset import (
+    _CyberSecEvalPromptInjectionDataset,
+)
+
+direct_logic_violating = await _CyberSecEvalPromptInjectionDataset(
+    injection_types=[CyberSecEvalInjectionType.DIRECT],
+    risk_categories=[CyberSecEvalRiskCategory.LOGIC_VIOLATING],
+).fetch_dataset_async()
+len(direct_logic_violating.seed_groups)
